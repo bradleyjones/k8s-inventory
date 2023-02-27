@@ -99,6 +99,34 @@ func fillContainerDetails(pod v1.Pod) map[string][]string {
 	return details
 }
 
+// fillContainerDetails grabs all the relevant fields out of a pod object so
+// they can be used to parse out the image details for all the containers in
+// a pod. Return details as an mapped array of strings using the container name
+// as the map key and the fields as an array of strings so they can be iterated
+func FillContainerDetails(pod v1.Pod) map[string][]string {
+	details := make(map[string][]string)
+
+	// grab init images
+	for _, c := range pod.Spec.InitContainers {
+		details[c.Name] = append(details[c.Name], c.Image)
+	}
+
+	for _, c := range pod.Status.InitContainerStatuses {
+		details[c.Name] = append(details[c.Name], c.Image, c.ImageID)
+	}
+
+	// grab regular images
+	for _, c := range pod.Spec.Containers {
+		details[c.Name] = append(details[c.Name], c.Image)
+	}
+
+	for _, c := range pod.Status.ContainerStatuses {
+		details[c.Name] = append(details[c.Name], c.Image, c.ImageID)
+	}
+
+	return details
+}
+
 // image is an intermediate struct for parsing out image details from
 // a list of containers
 type image struct {

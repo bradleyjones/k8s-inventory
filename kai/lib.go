@@ -26,8 +26,13 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
+type ReportItem struct {
+	Pods       []inventory.Pod
+	Containers []inventory.Container
+}
+
 type channels struct {
-	reportItem chan inventory.ReportItem
+	reportItem chan ReportItem
 	errors     chan error
 	stopper    chan struct{}
 }
@@ -76,7 +81,7 @@ func PeriodicallyGetInventoryReport(cfg *config.Application) {
 
 // launchPodWorkerPool will create a worker pool of goroutines to grab pods
 // from each namespace. This should alleviate the load on the api server
-func launchPodWorkerPool(cfg *config.Application, kubeconfig *rest.Config, ch channels, queue chan string) {
+func launchPodWorkerPool(cfg *config.Application, kubeconfig *rest.Config, ch channels, queue chan inventory.Namespace) {
 	for i := 0; i < cfg.Kubernetes.WorkerPoolSize; i++ {
 		go func() {
 			// each worker needs its own clientset
@@ -98,6 +103,7 @@ func launchPodWorkerPool(cfg *config.Application, kubeconfig *rest.Config, ch ch
 	}
 }
 
+// TODO Find the actual count of images in use here?
 func getImageCountFromResults(results []inventory.ReportItem) int {
 	imageCount := 0
 	for _, result := range results {
@@ -116,7 +122,7 @@ func GetInventoryReport(cfg *config.Application) (inventory.Report, error) {
 	}
 
 	ch := channels{
-		reportItem: make(chan inventory.ReportItem),
+		reportItem: make(chan ReportItem),
 		errors:     make(chan error),
 		stopper:    make(chan struct{}, 1),
 	}
@@ -127,7 +133,7 @@ func GetInventoryReport(cfg *config.Application) (inventory.Report, error) {
 	}
 
 	// fill the queue of namespaces to process
-	queue := make(chan string, len(namespaces))
+	queue := make(chan inventory.Namespace, len(namespaces))
 	for _, n := range namespaces {
 		queue <- n
 	}
@@ -137,11 +143,15 @@ func GetInventoryReport(cfg *config.Application) (inventory.Report, error) {
 	launchPodWorkerPool(cfg, kubeconfig, ch, queue)
 
 	// listen for results from worker pool
-	results := make([]inventory.ReportItem, 0)
+	results := make([]ReportItem, 0)
+	pods := make([]inventory.Pod, 0)
+	containers := make([]inventory.Container, 0)
 	for len(results) < len(namespaces) {
 		select {
 		case item := <-ch.reportItem:
 			results = append(results, item)
+			pods = append(pods, item.Pods...)
+			containers = append(containers, item.Containers...)
 
 		case err := <-ch.errors:
 			close(ch.stopper)
@@ -166,14 +176,22 @@ func GetInventoryReport(cfg *config.Application) (inventory.Report, error) {
 		return inventory.Report{}, fmt.Errorf("failed to get Cluster Server Version: %w", err)
 	}
 
+	// TODO Re-enable once getImageCountFromResults is fixed
+	// log.Infof(
+	// 	"Got Inventory Report with %d images running across %d namespaces",
+	// 	getImageCountFromResults(results),
+	// 	len(results),
+	// )
 	log.Infof(
-		"Got Inventory Report with %d images running across %d namespaces",
-		getImageCountFromResults(results),
+		"Got Inventory Report with %d containers running across %d namespaces",
+		len(containers),
 		len(results),
 	)
 	return inventory.Report{
 		Timestamp:             time.Now().UTC().Format(time.RFC3339),
-		Results:               results,
+		Namepaces:             namespaces,
+		Pods:                  pods,
+		Containers:            containers,
 		ServerVersionMetadata: serverVersion,
 		ClusterName:           cfg.KubeConfig.Cluster,
 		InventoryType:         "kubernetes",
@@ -239,31 +257,54 @@ func excludeNamespace(checks []excludeCheck, namespace string) bool {
 	return false
 }
 
+func fetchNamspace(clientset *kubernetes.Clientset, namespace string) (inventory.Namespace, error) {
+	ns, err := clientset.CoreV1().Namespaces().Get(context.Background(), namespace, metav1.GetOptions{})
+	if err != nil {
+		return inventory.Namespace{}, err
+	}
+
+	return inventory.Namespace{
+		Annotations: ns.Annotations,
+		Checksum:    "",
+		Labels:      ns.Labels,
+		Name:        ns.Name,
+		Uid:         string(ns.UID),
+	}, nil
+}
+
 // fetchNamespaces either return the namespaces detailed in the configuration
 // OR if there are no namespaces listed in the configuration then it will
 // return every namespace in the cluster.
-func fetchNamespaces(kubeconfig *rest.Config, cfg *config.Application) ([]string, error) {
+func fetchNamespaces(kubeconfig *rest.Config, cfg *config.Application) ([]inventory.Namespace, error) {
 	defer tracker.TrackFunctionTime(time.Now(), "Fetching namespaces")
-	namespaces := make([]string, 0)
+	namespaces := make([]inventory.Namespace, 0)
 
 	exclusionChecklist := buildExclusionChecklist(cfg.NamespaceSelectors.Exclude)
 
+	// k8s clientset
+	clientset, err := client.GetClientSet(kubeconfig)
+	if err != nil {
+		return []inventory.Namespace{}, fmt.Errorf("failed to get k8s client set: %w", err)
+	}
+
 	// Return list of namespaces if there are any present
+	// First fetching the metadata for each namespace
 	if len(cfg.NamespaceSelectors.Include) > 0 {
+		namespaceNames := make([]string, 0)
 		for _, ns := range cfg.NamespaceSelectors.Include {
 			if !excludeNamespace(exclusionChecklist, ns) {
-				namespaces = append(namespaces, ns)
+				namespaceNames = append(namespaceNames, ns)
+				namespace, err := fetchNamspace(clientset, ns)
+				if err != nil {
+					return []inventory.Namespace{}, fmt.Errorf("failed to fetch namespace %s: %w", ns, err)
+				}
+				namespaces = append(namespaces, namespace)
 			}
 		}
 		return namespaces, nil
 	}
 
 	// Otherwise collect all namespaces
-	clientset, err := client.GetClientSet(kubeconfig)
-	if err != nil {
-		return []string{}, fmt.Errorf("failed to get k8s client set: %w", err)
-	}
-
 	cont := ""
 	for {
 		opts := metav1.ListOptions{
@@ -280,7 +321,14 @@ func fetchNamespaces(kubeconfig *rest.Config, cfg *config.Application) ([]string
 
 		for _, ns := range list.Items {
 			if !excludeNamespace(exclusionChecklist, ns.ObjectMeta.Name) {
-				namespaces = append(namespaces, ns.ObjectMeta.Name)
+				namespace := inventory.Namespace{
+					Annotations: ns.Annotations,
+					Checksum:    "",
+					Labels:      ns.Labels,
+					Name:        ns.Name,
+					Uid:         string(ns.UID),
+				}
+				namespaces = append(namespaces, namespace)
 			}
 		}
 
@@ -294,8 +342,8 @@ func fetchNamespaces(kubeconfig *rest.Config, cfg *config.Application) ([]string
 }
 
 // Atomic Function that gets all the Namespace Images for a given searchNamespace and reports them to the unbuffered results channel
-func fetchPodsInNamespace(clientset *kubernetes.Clientset, cfg *config.Application, ns string, ch channels) {
-	defer tracker.TrackFunctionTime(time.Now(), "Fetching pods in namespace: "+ns)
+func fetchPodsInNamespace(clientset *kubernetes.Clientset, cfg *config.Application, ns inventory.Namespace, ch channels) {
+	defer tracker.TrackFunctionTime(time.Now(), "Fetching pods in namespace: "+ns.Name)
 	pods := make([]v1.Pod, 0)
 	cont := ""
 	for {
@@ -305,7 +353,7 @@ func fetchPodsInNamespace(clientset *kubernetes.Clientset, cfg *config.Applicati
 			TimeoutSeconds: &cfg.Kubernetes.RequestTimeoutSeconds,
 		}
 
-		list, err := clientset.CoreV1().Pods(ns).List(context.TODO(), opts)
+		list, err := clientset.CoreV1().Pods(ns.Name).List(context.TODO(), opts)
 		if err != nil {
 			// TODO: Handle HTTP 410 and recover
 			ch.errors <- err
@@ -322,7 +370,53 @@ func fetchPodsInNamespace(clientset *kubernetes.Clientset, cfg *config.Applicati
 	}
 
 	log.Infof("There are %d pods in namespace \"%s\"", len(pods), ns)
-	ch.reportItem <- inventory.NewReportItem(pods, ns, cfg.IgnoreNotRunning, cfg.MissingTagPolicy.Policy, cfg.MissingTagPolicy.Tag)
+
+	reportItem := ReportItem{
+		Pods:       make([]inventory.Pod, 0),
+		Containers: make([]inventory.Container, 0),
+	}
+
+	for _, pod := range pods {
+		reportItem.Pods = append(reportItem.Pods, inventory.Pod{
+			Annotations:  pod.Annotations,
+			Checksum:     "",
+			Labels:       pod.Labels,
+			Name:         pod.Name,
+			NamespaceUid: ns.Uid,
+			NodeUid:      pod.Spec.NodeName, // TODO(bradjones) Should be Uid not Name
+			Uid:          string(pod.UID),
+		})
+		reportItem.Containers = append(reportItem.Containers, getContainersFromPod(pod)...)
+	}
+	// ch.reportItem <- inventory.NewReportItem(pods, ns, cfg.IgnoreNotRunning, cfg.MissingTagPolicy.Policy, cfg.MissingTagPolicy.Tag)
+	ch.reportItem <- reportItem
+}
+
+func getContainersFromPod(pod v1.Pod) []inventory.Container {
+	// Look at both status for init and regular containers
+	// Must use status when looking at containers in order to obtain the container ID
+	// TODO(bradjones) - may consider also looking at the spec for more details
+	containers := make([]inventory.Container, 0)
+
+	for _, c := range pod.Status.InitContainerStatuses {
+		containers = append(containers, inventory.Container{
+			Id:          c.ContainerID,
+			PodUid:      string(pod.UID),
+			ImageTag:    c.Image,
+			ImageDigest: c.ImageID,
+			Name:        c.Name,
+		})
+	}
+	for _, c := range pod.Status.ContainerStatuses {
+		containers = append(containers, inventory.Container{
+			Id:          c.ContainerID,
+			PodUid:      string(pod.UID),
+			ImageTag:    c.Image,
+			ImageDigest: c.ImageID,
+			Name:        c.Name,
+		})
+	}
+	return containers
 }
 
 func SetLogger(logger logger.Logger) {

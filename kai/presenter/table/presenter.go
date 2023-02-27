@@ -27,12 +27,13 @@ func (pres *Presenter) Present(output io.Writer) error {
 	rows := make([][]string, 0)
 
 	columns := []string{"Image Tag", "Repo Digest", "Namespace"}
-	for _, n := range pres.report.Results {
-		namespace := n.Namespace
-		for _, image := range n.Images {
-			row := []string{image.Tag, image.RepoDigest, namespace}
+	for _, n := range pres.report.Namepaces {
+		namespace := n.Name
+		// for _, image := range n.Images {
+			// row := []string{image.Tag, image.RepoDigest, namespace}
+			row := []string{"", "", namespace}
 			rows = append(rows, row)
-		}
+		// }
 	}
 
 	if len(rows) == 0 {
