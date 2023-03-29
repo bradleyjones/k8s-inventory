@@ -265,7 +265,6 @@ func fetchNamspace(clientset *kubernetes.Clientset, namespace string) (inventory
 
 	return inventory.Namespace{
 		Annotations: ns.Annotations,
-		Checksum:    "",
 		Labels:      ns.Labels,
 		Name:        ns.Name,
 		Uid:         string(ns.UID),
@@ -323,7 +322,6 @@ func fetchNamespaces(kubeconfig *rest.Config, cfg *config.Application) ([]invent
 			if !excludeNamespace(exclusionChecklist, ns.ObjectMeta.Name) {
 				namespace := inventory.Namespace{
 					Annotations: ns.Annotations,
-					Checksum:    "",
 					Labels:      ns.Labels,
 					Name:        ns.Name,
 					Uid:         string(ns.UID),
@@ -379,7 +377,6 @@ func fetchPodsInNamespace(clientset *kubernetes.Clientset, cfg *config.Applicati
 	for _, pod := range pods {
 		reportItem.Pods = append(reportItem.Pods, inventory.Pod{
 			Annotations:  pod.Annotations,
-			Checksum:     "",
 			Labels:       pod.Labels,
 			Name:         pod.Name,
 			NamespaceUid: ns.Uid,

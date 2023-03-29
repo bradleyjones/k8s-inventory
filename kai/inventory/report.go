@@ -6,7 +6,6 @@ import (
 
 type Namespace struct {
 	Annotations map[string]string `json:"annotations"`
-	Checksum    string            `json:"checksum"`
 	Labels      map[string]string `json:"labels"`
 	Name        string            `json:"name"`
 	Uid         string            `json:"uid"`
@@ -24,7 +23,6 @@ type Container struct {
 type Node struct {
 	Annotations             map[string]string `json:"annotations"`
 	Arch                    string            `json:"arch"`
-	Checksum                string            `json:"checksum"`
 	ContainerRuntimeVersion string            `json:"container_runtime_version"`
 	KernelVersion           string            `json:"kernel_version"`
 	KubeProxyVersion        string            `json:"kube_proxy_version"`
@@ -38,7 +36,6 @@ type Node struct {
 
 type Pod struct {
 	Annotations  map[string]string `json:"annotations"`
-	Checksum     string            `json:"checksum"`
 	Labels       map[string]string `json:"labels"`
 	Name         string            `json:"name"`
 	NamespaceUid string            `json:"namespace_uid"`
