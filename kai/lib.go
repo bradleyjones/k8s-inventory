@@ -29,6 +29,7 @@ import (
 type ReportItem struct {
 	Pods       []inventory.Pod
 	Containers []inventory.Container
+	Nodes      []inventory.Node
 }
 
 type channels struct {
@@ -146,12 +147,14 @@ func GetInventoryReport(cfg *config.Application) (inventory.Report, error) {
 	results := make([]ReportItem, 0)
 	pods := make([]inventory.Pod, 0)
 	containers := make([]inventory.Container, 0)
+	nodes := make([]inventory.Node, 0)
 	for len(results) < len(namespaces) {
 		select {
 		case item := <-ch.reportItem:
 			results = append(results, item)
 			pods = append(pods, item.Pods...)
 			containers = append(containers, item.Containers...)
+			nodes = append(nodes, item.Nodes...)
 
 		case err := <-ch.errors:
 			close(ch.stopper)
@@ -176,6 +179,17 @@ func GetInventoryReport(cfg *config.Application) (inventory.Report, error) {
 		return inventory.Report{}, fmt.Errorf("failed to get Cluster Server Version: %w", err)
 	}
 
+	// TODO Clean this up
+	// Make nodes unique
+	nodeMap := make(map[string]inventory.Node)
+	for _, node := range nodes {
+		nodeMap[node.Name] = node
+	}
+	uniqueNodes := []inventory.Node{}
+	for _, node := range nodeMap {
+		uniqueNodes = append(uniqueNodes, node)
+	}
+
 	// TODO Re-enable once getImageCountFromResults is fixed
 	// log.Infof(
 	// 	"Got Inventory Report with %d images running across %d namespaces",
@@ -192,6 +206,7 @@ func GetInventoryReport(cfg *config.Application) (inventory.Report, error) {
 		Namepaces:             namespaces,
 		Pods:                  pods,
 		Containers:            containers,
+		Nodes:                 uniqueNodes,
 		ServerVersionMetadata: serverVersion,
 		ClusterName:           cfg.KubeConfig.Cluster,
 		InventoryType:         "kubernetes",
@@ -372,21 +387,54 @@ func fetchPodsInNamespace(clientset *kubernetes.Clientset, cfg *config.Applicati
 	reportItem := ReportItem{
 		Pods:       make([]inventory.Pod, 0),
 		Containers: make([]inventory.Container, 0),
+		Nodes:      make([]inventory.Node, 0),
 	}
 
+	nodeMap := make(map[string]inventory.Node)
+
 	for _, pod := range pods {
+		// Nodes are unique by name at the same time in k8s, a node could go down and come back up with the same name
+		// but for the purpose of getting unique nodes at a point in time we can assume the name is unique enough.
+		node, ok := nodeMap[pod.Spec.NodeName]
+		if !ok {
+			node, err := getNodeByName(clientset, pod.Spec.NodeName)
+			if err != nil {
+				ch.errors <- err
+				return
+			}
+			nodeMap[node.Name] = node
+		}
+		fmt.Println(nodeMap)
 		reportItem.Pods = append(reportItem.Pods, inventory.Pod{
 			Annotations:  pod.Annotations,
 			Labels:       pod.Labels,
 			Name:         pod.Name,
 			NamespaceUid: ns.Uid,
-			NodeUid:      pod.Spec.NodeName, // TODO(bradjones) Should be Uid not Name
+			NodeUid:      node.Uid,
 			Uid:          string(pod.UID),
 		})
 		reportItem.Containers = append(reportItem.Containers, getContainersFromPod(pod)...)
 	}
+
+	for _, node := range nodeMap {
+		reportItem.Nodes = append(reportItem.Nodes, node)
+	}
 	// ch.reportItem <- inventory.NewReportItem(pods, ns, cfg.IgnoreNotRunning, cfg.MissingTagPolicy.Policy, cfg.MissingTagPolicy.Tag)
 	ch.reportItem <- reportItem
+}
+
+func getNodeByName(clientset *kubernetes.Clientset, nodeName string) (inventory.Node, error) {
+	node, err := clientset.CoreV1().Nodes().Get(context.TODO(), nodeName, metav1.GetOptions{})
+	if err != nil {
+		return inventory.Node{}, err
+	}
+
+	return inventory.Node{
+		Annotations: node.Annotations,
+		Labels:      node.Labels,
+		Name:        node.Name,
+		Uid:         string(node.UID),
+	}, nil
 }
 
 func getContainersFromPod(pod v1.Pod) []inventory.Container {
