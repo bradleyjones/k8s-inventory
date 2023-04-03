@@ -16,7 +16,7 @@ import (
 	"github.com/anchore/kai/kai/inventory"
 )
 
-const ReportAPIPath = "v1/enterprise/inventories"
+const ReportAPIPath = "v1/enterprise/kubernetes-inventory"
 
 // This method does the actual Reporting (via HTTP) to Anchore
 //

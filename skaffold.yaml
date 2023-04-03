@@ -19,5 +19,7 @@ deploy:
         kai.log.level: debug
         kai.log.structured: false
         kai.quiet: false
-        kai.verboseInventoryReports: false
+        kai.verboseInventoryReports: true
         kai.pollingIntervalSeconds: 60
+        kai.namespaceSelectors:
+          include: [ "default" ]

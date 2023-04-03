@@ -209,7 +209,6 @@ func GetInventoryReport(cfg *config.Application) (inventory.Report, error) {
 		Nodes:                 uniqueNodes,
 		ServerVersionMetadata: serverVersion,
 		ClusterName:           cfg.KubeConfig.Cluster,
-		InventoryType:         "kubernetes",
 	}, nil
 }
 
@@ -382,7 +381,7 @@ func fetchPodsInNamespace(clientset *kubernetes.Clientset, cfg *config.Applicati
 		}
 	}
 
-	log.Infof("There are %d pods in namespace \"%s\"", len(pods), ns)
+	log.Infof("There are %d pods in namespace \"%s\"", len(pods), ns.Name)
 
 	reportItem := ReportItem{
 		Pods:       make([]inventory.Pod, 0),
@@ -395,7 +394,7 @@ func fetchPodsInNamespace(clientset *kubernetes.Clientset, cfg *config.Applicati
 	for _, pod := range pods {
 		// Nodes are unique by name at the same time in k8s, a node could go down and come back up with the same name
 		// but for the purpose of getting unique nodes at a point in time we can assume the name is unique enough.
-		node, ok := nodeMap[pod.Spec.NodeName]
+		_, ok := nodeMap[pod.Spec.NodeName]
 		if !ok {
 			node, err := getNodeByName(clientset, pod.Spec.NodeName)
 			if err != nil {
@@ -404,13 +403,12 @@ func fetchPodsInNamespace(clientset *kubernetes.Clientset, cfg *config.Applicati
 			}
 			nodeMap[node.Name] = node
 		}
-		fmt.Println(nodeMap)
 		reportItem.Pods = append(reportItem.Pods, inventory.Pod{
 			Annotations:  pod.Annotations,
 			Labels:       pod.Labels,
 			Name:         pod.Name,
 			NamespaceUid: ns.Uid,
-			NodeUid:      node.Uid,
+			NodeUid:      nodeMap[pod.Spec.NodeName].Uid,
 			Uid:          string(pod.UID),
 		})
 		reportItem.Containers = append(reportItem.Containers, getContainersFromPod(pod)...)
