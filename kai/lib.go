@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"regexp"
+	"strings"
 	"time"
 
 	"github.com/anchore/kai/kai/presenter"
@@ -435,31 +436,121 @@ func getNodeByName(clientset *kubernetes.Clientset, nodeName string) (inventory.
 	}, nil
 }
 
-func getContainersFromPod(pod v1.Pod) []inventory.Container {
-	// Look at both status for init and regular containers
-	// Must use status when looking at containers in order to obtain the container ID
-	// TODO(bradjones) - may consider also looking at the spec for more details
-	containers := make([]inventory.Container, 0)
+// Compile the regexes used for parsing once so they can be reused without having to recompile
+var (
+	digestRegex = regexp.MustCompile(`@(sha[[:digit:]]{3}:[[:alnum:]]{32,})`)
+	tagRegex    = regexp.MustCompile(`:[\w][\w.-]{0,127}$`)
+)
 
+func getContainersFromPod(pod v1.Pod) []inventory.Container {
+	// Look at both status/spec for init and regular containers
+	// Must use status when looking at containers in order to obtain the container ID
+	containers := make(map[string]inventory.Container, 0)
+
+	fmt.Println("-------POD-----------")
+	for _, c := range pod.Spec.InitContainers {
+		fmt.Println("InitContainers")
+		fmt.Println(c.Image)
+	}
 	for _, c := range pod.Status.InitContainerStatuses {
-		containers = append(containers, inventory.Container{
+		fmt.Println("InitContainerStatuses")
+		fmt.Println(c.ImageID)
+		// Look for something like:
+		//  k3d-registry.localhost:5000/redis:4@sha256:5bd4fe08813b057df2ae55003a75c39d80a4aea9f1a0fbc0fbd7024edf555786
+		repo := c.ImageID
+		digest := ""
+		digestresult := digestRegex.FindStringSubmatchIndex(repo)
+		if len(digestresult) > 0 {
+			i := digestresult[0]
+			digest = repo[i+1:] // sha256:5bd4fe08813b057df2ae55003a75c39d80a4aea9f1a0fbc0fbd7024edf555786
+			repo = repo[:i]     // k3d-registry.localhost:5000/redis:4
+		}
+
+		tag := ""
+		tagresult := tagRegex.FindStringSubmatchIndex(c.Image)
+		if len(tagresult) > 0 {
+			i := tagresult[0]
+			// fmt.Println(c.Image)
+			// fmt.Println(tagresult[0])
+			tag = c.Image[i+1:] // 4
+		}
+
+		containers[c.Name] = inventory.Container{
 			Id:          c.ContainerID,
 			PodUid:      string(pod.UID),
-			ImageTag:    c.Image,
-			ImageDigest: c.ImageID,
+			ImageTag:    tag,
+			ImageDigest: digest,
 			Name:        c.Name,
-		})
+		}
+	}
+	for _, c := range pod.Spec.Containers {
+		fmt.Println("Containers")
+		fmt.Println(c.Image)
+
+		tag := ""
+		minusSha := strings.Split(c.Image, "@")[0]
+		tagresult := tagRegex.FindStringSubmatchIndex(minusSha)
+		if len(tagresult) > 0 {
+			i := tagresult[0]
+			fmt.Println("*****TAG*****")
+			fmt.Println(c.Image)
+			fmt.Println(tagresult[0])
+			tag = minusSha[i+1:] // 4
+		}
+
+		containers[c.Name] = inventory.Container{
+			PodUid:   string(pod.UID),
+			ImageTag: tag,
+			Name:     c.Name,
+		}
 	}
 	for _, c := range pod.Status.ContainerStatuses {
-		containers = append(containers, inventory.Container{
-			Id:          c.ContainerID,
-			PodUid:      string(pod.UID),
-			ImageTag:    c.Image,
-			ImageDigest: c.ImageID,
-			Name:        c.Name,
-		})
+		fmt.Println("ContainerStatuses")
+		fmt.Println(c.Image)
+		fmt.Println(c.ImageID)
+		// Look for something like:
+		//  k3d-registry.localhost:5000/redis:4@sha256:5bd4fe08813b057df2ae55003a75c39d80a4aea9f1a0fbc0fbd7024edf555786
+		repo := c.ImageID
+		digest := ""
+		digestresult := digestRegex.FindStringSubmatchIndex(repo)
+		if len(digestresult) > 0 {
+			i := digestresult[0]
+			digest = repo[i+1:] // sha256:5bd4fe08813b057df2ae55003a75c39d80a4aea9f1a0fbc0fbd7024edf555786
+			repo = repo[:i]     // k3d-registry.localhost:5000/redis:4
+		}
+
+		// tag := ""
+		// tagresult := tagRegex.FindStringSubmatchIndex(c.Image)
+		// if len(tagresult) > 0 {
+		// 	i := tagresult[0]
+		// 	// fmt.Println(c.Image)
+		// 	// fmt.Println(tagresult[0])
+		// 	tag = c.Image[i+1:] // 4
+		// }
+
+		if containerFound, ok := containers[c.Name]; ok {
+			containerFound.Id = c.ContainerID
+			containerFound.ImageDigest = digest
+			containers[c.Name] = containerFound
+		} else {
+			containers[c.Name] = inventory.Container{
+				Id:     c.ContainerID,
+				PodUid: string(pod.UID),
+				// ImageTag:    tag,
+				ImageDigest: digest,
+				Name:        c.Name,
+			}
+		}
 	}
-	return containers
+	fmt.Println("-------END-----------")
+
+	// Flatten the map into a slice
+	containersData := make([]inventory.Container, 0)
+	for _, v := range containers {
+		containersData = append(containersData, v)
+	}
+
+	return containersData
 }
 
 func SetLogger(logger logger.Logger) {
