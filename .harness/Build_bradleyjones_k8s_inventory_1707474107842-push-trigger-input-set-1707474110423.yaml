@@ -1,0 +1,14 @@
+inputSet:
+  name: Build_bradleyjones_k8s_inventory_1707474107842-push-trigger-input-set
+  identifier: Build_bradleyjones_k8s_inventory_1707474107842pushtriggerinputset
+  orgIdentifier: default
+  projectIdentifier: default_project
+  pipeline:
+    identifier: Build_bradleyjones_k8s_inventory_1707474107842
+    properties:
+      ci:
+        codebase:
+          build:
+            type: branch
+            spec:
+              branch: <+trigger.branch>

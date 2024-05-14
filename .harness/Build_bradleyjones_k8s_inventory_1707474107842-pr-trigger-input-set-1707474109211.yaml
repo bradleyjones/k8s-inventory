@@ -1,0 +1,14 @@
+inputSet:
+  name: Build_bradleyjones_k8s_inventory_1707474107842-pr-trigger-input-set
+  identifier: Build_bradleyjones_k8s_inventory_1707474107842prtriggerinputset
+  orgIdentifier: default
+  projectIdentifier: default_project
+  pipeline:
+    identifier: Build_bradleyjones_k8s_inventory_1707474107842
+    properties:
+      ci:
+        codebase:
+          build:
+            type: PR
+            spec:
+              number: <+trigger.prNumber>
